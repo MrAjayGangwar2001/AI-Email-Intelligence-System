@@ -1,0 +1,102 @@
+services:
+
+  # ------------------------------------------------------------
+  # PostgreSQL - acts as our local Supabase-compatible database.
+  # (You can point the backend at real Supabase instead by
+  #  changing DB_HOST/DB_PORT/DB_USERNAME/DB_PASSWORD in .env
+  #  and removing this service.)
+  # ------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: eis-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-email_intelligence}
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Runs automatically on first container start (fresh DB only)
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+
+  # ------------------------------------------------------------
+  # Spring Boot backend
+  # ------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: eis-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-email_intelligence}
+      DB_USERNAME: ${DB_USERNAME:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-changeme}
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-phi3:mini}
+      GROQ_API_KEY: ${GROQ_API_KEY}
+      GROQ_MODEL: ${GROQ_MODEL:-llama-3.1-8b-instant}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+    ports:
+      - "8080:8080"
+
+  # ------------------------------------------------------------
+  # n8n - pulls Gmail, forwards to backend
+  # ------------------------------------------------------------
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: eis-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_USER:-admin}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD:-changeme}
+      GENERIC_TIMEZONE: ${TZ:-Asia/Kolkata}
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678/
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      - backend
+
+  # ------------------------------------------------------------
+  # React dashboard
+  # ------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8080}
+    container_name: eis-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+
+volumes:
+  postgres_data:
+  ollama_data:
+  n8n_data:
